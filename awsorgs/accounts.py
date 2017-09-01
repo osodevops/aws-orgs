@@ -41,112 +41,109 @@ import awsorgs.orgs
 from awsorgs.orgs import scan_deployed_accounts
 
 
-def scan_created_accounts(log, org_client):
+def scan_created_accounts(org):
     """
     Query AWS Organization for accounts with creation status of 'SUCCEEDED'.
     Returns a list of dictionary.
     """
-    log.debug('running')
-    status = org_client.list_create_account_status(States=['SUCCEEDED'])
+    org.log.debug('running')
+    status = org.client.list_create_account_status(States=['SUCCEEDED'])
     created_accounts = status['CreateAccountStatuses']
     while 'NextToken' in status and status['NextToken']:
-        log.debug("NextToken: %s" % status['NextToken'])
-        status = org_client.list_create_account_status(
+        org.log.debug("NextToken: %s" % status['NextToken'])
+        status = org.client.list_create_account_status(
                 States=['SUCCEEDED'],
                 NextToken=status['NextToken'])
         created_accounts += status['CreateAccountStatuses']
     return created_accounts
 
 
-def create_accounts(org_client, args, log, deployed_accounts, account_spec):
+def create_accounts(org):
     """
     Compare deployed_accounts to list of accounts in the accounts spec.
-    Create accounts not found in deployed_accounts.
+    Create accounts not found in deployed['accounts'].
     """
-    for a_spec in account_spec['accounts']:
-        if not lookup(deployed_accounts, 'Name', a_spec['Name'],):
+    for a_spec in org.account_spec['accounts']:
+        if not lookup(org.deployed['accounts'], 'Name', a_spec['Name'],):
             # check if it is still being provisioned
-            created_accounts = scan_created_accounts(log, org_client)
+            created_accounts = scan_created_accounts(org)
             if lookup(created_accounts, 'AccountName', a_spec['Name']):
-                log.warn("New account '%s' is not yet available" %
+                org.log.warn("New account '%s' is not yet available" %
                         a_spec['Name'])
                 break
             # create a new account
             if 'Email' in a_spec and a_spec['Email']:
                 email_addr = a_spec['Email']
             else:
-                email_addr = '%s@%s' % (a_spec['Name'], account_spec['default_domain'])
-            log.info("Creating account '%s'" % (a_spec['Name']))
-            log.debug('account email: %s' % email_addr)
-            if args['--exec']:
-                new_account = org_client.create_account(
+                email_addr = '%s@%s' % (a_spec['Name'],
+                        org.account_spec['default_domain'])
+            org.log.info("Creating account '%s'" % (a_spec['Name']))
+            org.log.debug('account email: %s' % email_addr)
+            if org.args['--exec']:
+                new_account = org.client.create_account(
                         AccountName=a_spec['Name'], Email=email_addr)
                 create_id = new_account['CreateAccountStatus']['Id']
-                log.info("CreateAccountStatus Id: %s" % (create_id))
+                org.log.info("CreateAccountStatus Id: %s" % (create_id))
                 # validate creation status
                 counter = 0
                 maxtries = 5
                 while counter < maxtries:
-                    creation = org_client.describe_create_account_status(
+                    creation = org.client.describe_create_account_status(
                             CreateAccountRequestId=create_id
                             )['CreateAccountStatus']
                     if creation['State'] == 'IN_PROGRESS':
                         time.sleep(5)
-                        log.info("Account creation in progress for '%s'" %
+                        org.log.info("Account creation in progress for '%s'" %
                                 a_spec['Name'])
                     elif creation['State'] == 'SUCCEEDED':
-                        log.info("Account creation succeeded")
+                        org.log.info("Account creation succeeded")
                         break
                     elif creation['State'] == 'FAILED':
-                        log.error("Account creation failed: %s" %
+                        org.log.error("Account creation failed: %s" %
                                 creation['FailureReason'])
                         break
                     counter += 1
                 if counter == maxtries and creation['State'] == 'IN_PROGRESS':
-                     log.warn("Account creation still pending. Moving on!")
+                     org.log.warn("Account creation still pending. Moving on!")
 
 
-def display_provisioned_accounts(log, deployed_accounts):
+def display_provisioned_accounts(org):
     """
     Print report of currently deployed accounts in AWS Organization.
     """
     header = "Provisioned Accounts in Org:"
     overbar = '_' * len(header)
-    log.info("\n%s\n%s" % (overbar, header))
-    for a_name in sorted(map(lambda a: a['Name'], deployed_accounts)):
-        a_id = lookup(deployed_accounts, 'Name', a_name, 'Id')
-        a_email = lookup(deployed_accounts, 'Name', a_name, 'Email')
+    org.log.info("\n%s\n%s" % (overbar, header))
+    for a_name in sorted(map(lambda a: a['Name'], org.deployed['accounts'])):
+        a_id = lookup(org.deployed['accounts'], 'Name', a_name, 'Id')
+        a_email = lookup(org.deployed['accounts'], 'Name', a_name, 'Email')
         spacer = ' ' * (24 - len(a_name))
-        log.info("%s%s%s\t\t%s" % (a_name, spacer, a_id, a_email))
+        org.log.info("%s%s%s\t\t%s" % (a_name, spacer, a_id, a_email))
 
 
 def main():
-    Org = namedtuple('Org',['args', 'log', 'client', 'deployed_accounts', 'account_spec'])
-    org = Org(
-            args = docopt(__doc__),
-            log = None,
-            client = boto3.client('organizations'),
-            deployed_accounts = None,
-            account_spec = None,
-    )
+    # create 'org' object as named tuple.  # initailize all fields to None.
+    Org = namedtuple('Org',['args', 'log', 'client', 'deployed', 'account_spec'])
+    org = Org(**{f:None for f in Org._fields})
 
+    # populate org attribute values
+    org = org._replace(args = docopt(__doc__))
+    org = org._replace(client = boto3.client('organizations'))
     org = org._replace(log = get_logger(org.args))
-    org = org._replace(deployed_accounts = scan_deployed_accounts(org.log, org.client))
+    org = org._replace(deployed = dict())
+    org.deployed['accounts'] = scan_deployed_accounts(org.log, org.client)
 
     if org.args['--spec-file']:
         org = org._replace(account_spec = validate_spec_file(
                 org.log, org.args['--spec-file'], 'account_spec'))
         validate_master_id(org.client, org.account_spec)
-    #print org.__repr__
-    #print org._asdict()
 
     if org.args['report']:
-        display_provisioned_accounts(org.log, org.deployed_accounts)
+        display_provisioned_accounts(org)
 
     if org.args['create']:
-        create_accounts(org.client, org.args, org.log, org.deployed_accounts, org.account_spec)
-        unmanaged= [a
-                for a in map(lambda a: a['Name'], org.deployed_accounts)
+        create_accounts(org)
+        unmanaged= [a for a in map(lambda a: a['Name'], org.deployed['accounts'])
                 if a not in map(lambda a: a['Name'], org.account_spec['accounts'])]
         if unmanaged:
             log.warn("Unmanaged accounts in Org: %s" % (', '.join(unmanaged)))
