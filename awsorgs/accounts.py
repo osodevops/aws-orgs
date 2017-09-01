@@ -27,6 +27,7 @@ Options:
 
 import yaml
 import time
+from collections import namedtuple
 
 import boto3
 import botocore.exceptions
@@ -120,24 +121,33 @@ def display_provisioned_accounts(log, deployed_accounts):
 
 
 def main():
-    args = docopt(__doc__)
-    log = get_logger(args)
-    org_client = boto3.client('organizations')
-    root_id = get_root_id(org_client)
-    deployed_accounts = scan_deployed_accounts(log, org_client)
+    Org = namedtuple('Org',['args', 'log', 'client', 'deployed_accounts', 'account_spec'])
+    org = Org(
+            args = docopt(__doc__),
+            log = None,
+            client = boto3.client('organizations'),
+            deployed_accounts = None,
+            account_spec = None,
+    )
 
-    if args['--spec-file']:
-        account_spec = validate_spec_file(log, args['--spec-file'], 'account_spec')
-        validate_master_id(org_client, account_spec)
+    org = org._replace(log = get_logger(org.args))
+    org = org._replace(deployed_accounts = scan_deployed_accounts(org.log, org.client))
 
-    if args['report']:
-        display_provisioned_accounts(log, deployed_accounts)
+    if org.args['--spec-file']:
+        org = org._replace(account_spec = validate_spec_file(
+                org.log, org.args['--spec-file'], 'account_spec'))
+        validate_master_id(org.client, org.account_spec)
+    #print org.__repr__
+    #print org._asdict()
 
-    if args['create']:
-        create_accounts(org_client, args, log, deployed_accounts, account_spec)
+    if org.args['report']:
+        display_provisioned_accounts(org.log, org.deployed_accounts)
+
+    if org.args['create']:
+        create_accounts(org.client, org.args, org.log, org.deployed_accounts, org.account_spec)
         unmanaged= [a
-                for a in map(lambda a: a['Name'], deployed_accounts)
-                if a not in map(lambda a: a['Name'], account_spec['accounts'])]
+                for a in map(lambda a: a['Name'], org.deployed_accounts)
+                if a not in map(lambda a: a['Name'], org.account_spec['accounts'])]
         if unmanaged:
             log.warn("Unmanaged accounts in Org: %s" % (', '.join(unmanaged)))
 
