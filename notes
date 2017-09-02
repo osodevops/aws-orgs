@@ -72,7 +72,8 @@ DONE in manage_policies: dont delete a policy attached to an ou
 __________________
 TODO accounts.py:
 
-set account email if not specified
+create_accounts(): remove validate creation status loop. just check once
+DONE set account email if not specified
 DONE apply new spec validation framework
 DONE derive Email attribute from domain_name
 DONE enforce use of Team attribute on managed accounts
